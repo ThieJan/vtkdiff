@@ -23,6 +23,7 @@
 #include <vtkSmartPointer.h>
 #include <vtkUnstructuredGrid.h>
 #include <vtkXMLUnstructuredGridReader.h>
+#include <vtkUnstructuredGridReader.h>
 
 template <typename T>
 auto float_to_string(T const& v) -> std::string
@@ -35,12 +36,23 @@ auto float_to_string(T const& v) -> std::string
     return double_eps_sstream.str();
 }
 
+bool stringEndsWith(std::string const& str, std::string const& ending)
+{
+    if (str.length() < ending.length())
+        return false;
+
+    // now the difference is non-negative, no underflow possible.
+    auto const string_end_length = str.length() - ending.length();
+    return str.compare(string_end_length, ending.length(), ending) == 0;
+}
+
 struct Args
 {
     bool const quite;
     double const abs_err_thr;
     double const rel_err_thr;
-    std::string const vtk_input;
+    std::string const vtk_input_a;
+    std::string const vtk_input_b;
     std::string const data_array_a;
     std::string const data_array_b;
 };
@@ -56,13 +68,21 @@ auto parseCommandLine(int argc, char* argv[]) -> Args
         ' ',
         "0.1");
 
-    TCLAP::UnlabeledValueArg<std::string> vtk_input_arg(
-        "input-file",
+    TCLAP::UnlabeledValueArg<std::string> vtk_input_a_arg(
+        "input-file-a",
         "Path to the VTK unstructured grid input file.",
         true,
         "",
         "VTK FILE");
-    cmd.add(vtk_input_arg);
+    cmd.add(vtk_input_a_arg);
+
+    TCLAP::UnlabeledValueArg<std::string> vtk_input_b_arg(
+        "input-file-b",
+        "Path to the second VTK unstructured grid input file.",
+        false,
+        "",
+        "VTK FILE");
+    cmd.add(vtk_input_b_arg);
 
     TCLAP::ValueArg<std::string> data_array_a_arg(
         "a",
@@ -115,33 +135,50 @@ auto parseCommandLine(int argc, char* argv[]) -> Args
         { quite_arg.getValue()
         , abs_err_thr_arg.getValue()
         , abs_err_thr_arg.getValue()
-        , vtk_input_arg.getValue()
+        , vtk_input_a_arg.getValue()
+        , vtk_input_b_arg.getValue()
         , data_array_a_arg.getValue()
         , data_array_b_arg.getValue()
         };
 }
 
+template<typename T>
 auto readDataArraysFromFile(
-        std::string const& file_name,
+        std::string const& file_a_name,
+        std::string const& file_b_name,
         std::string const& data_array_a_name,
         std::string const& data_array_b_name)
     -> std::tuple<bool, vtkSmartPointer<vtkDataArray>, vtkSmartPointer<vtkDataArray>>
 {
     // Read input file.
-    auto reader = vtkXMLUnstructuredGridReader::New();
+    auto reader_a = T::New();
 
-    reader->SetFileName(file_name.c_str());
-    reader->Update();
+    reader_a->SetFileName(file_a_name.c_str());
+    reader_a->Update();
 
     // Get arrays
     auto a = vtkSmartPointer<vtkDataArray> {
-        reader->GetOutput()->GetPointData()->GetScalars(
+        reader_a->GetOutput()->GetPointData()->GetScalars(
         data_array_a_name.c_str()) };
-    auto b = vtkSmartPointer<vtkDataArray> {
-        reader->GetOutput()->GetPointData()->GetScalars(
-        data_array_b_name.c_str()) };
+    vtkSmartPointer<vtkDataArray> b;
+    if(file_b_name.size() == 0)
+    {
+        b = vtkSmartPointer<vtkDataArray> {
+            reader_a->GetOutput()->GetPointData()->GetScalars(
+            data_array_b_name.c_str()) };
+    }
+    else
+    {
+        auto reader_b = T::New();
+        reader_b->SetFileName(file_b_name.c_str());
+        reader_b->Update();
+        b = vtkSmartPointer<vtkDataArray> {
+            reader_b->GetOutput()->GetPointData()->GetScalars(
+            data_array_b_name.c_str()) };
+        reader_b->Delete();
+    }
 
-    reader->Delete();
+    reader_a->Delete();
 
     // Check arrays' validity
     if (!a)
@@ -177,14 +214,29 @@ main(int argc, char* argv[])
     vtkSmartPointer<vtkDataArray> a;
     vtkSmartPointer<vtkDataArray> b;
 
-    std::tie(read_successful, a, b)
-        = readDataArraysFromFile(
-            args.vtk_input,
-            args.data_array_a,
-            args.data_array_b);
+    if (stringEndsWith(args.vtk_input_a, ".vtu"))
+        std::tie(read_successful, a, b) =
+            readDataArraysFromFile<vtkXMLUnstructuredGridReader>(
+                args.vtk_input_a,
+                args.vtk_input_b,
+                args.data_array_a,
+                args.data_array_b);
+    else if (stringEndsWith(args.vtk_input_a, ".vtk"))
+        std::tie(read_successful, a, b) =
+            readDataArraysFromFile<vtkUnstructuredGridReader>(
+                args.vtk_input_a,
+                args.vtk_input_b,
+                args.data_array_a,
+                args.data_array_b);
+    else
+    {
+        std::cerr << "Invalid file type! "
+                     "Only .vtu and .vtk files are supported.\n";
+        return EXIT_FAILURE;
+    }
+
     if (!read_successful)
         return EXIT_FAILURE;
-
 
     // Check similarity of the data arrays.
 
